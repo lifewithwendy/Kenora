@@ -21,22 +21,20 @@ npm run dev                 # http://localhost:3000
 
 Any PostgreSQL 14+ works. Skip `npm run db:up` and set the database up yourself:
 
-1. Create a role and two databases (the second is for tests):
+1. Create a role and a database:
 
    ```sql
    -- psql -U postgres -h localhost
    CREATE ROLE kenora WITH LOGIN PASSWORD 'kenora' CREATEDB;
-   CREATE DATABASE kenora      OWNER kenora;
-   CREATE DATABASE kenora_test OWNER kenora;
+   CREATE DATABASE kenora OWNER kenora;
    ```
 
    `CREATEDB` is only needed for `npm run db:migrate:dev` (it uses a temporary shadow database).
 
-2. Point `.env` at them. The format is `postgres://USER:PASSWORD@HOST:PORT/DBNAME`. The example file uses port **5433** (the Docker mapping); a normal local install listens on **5432**. URL-encode special characters in the password (`@` becomes `%40`), and add `?sslmode=require` if your host needs SSL.
+2. Point `.env` at it. The format is `postgres://USER:PASSWORD@HOST:PORT/DBNAME`. The example file uses port **5433** (the Docker mapping); a normal local install listens on **5432**. URL-encode special characters in the password (`@` becomes `%40`), and add `?sslmode=require` if your host needs SSL.
 
    ```
    DATABASE_URL=postgres://kenora:kenora@localhost:5432/kenora
-   TEST_DATABASE_URL=postgres://kenora:kenora@localhost:5432/kenora_test
    ```
 
 3. Create the tables and sample data, then start the app:
@@ -51,7 +49,6 @@ Any PostgreSQL 14+ works. Skip `npm run db:up` and set the database up yourself:
 Notes:
 
 - **Use `db:migrate`, not `prisma db push`.** The migration also creates the unique-email index, the one-live-booking-per-attendee index and the `capacity > 0` check, which `db push` would skip.
-- `npm test` applies the migrations to `TEST_DATABASE_URL` and **wipes its data**, so never point it at a database you care about.
 - To start over, drop and recreate the database, then run `db:migrate` and `db:seed` again. (`npm run db:reset` only works with the Docker setup.)
 
 ### Dev-only logins (created by the seed)
@@ -78,17 +75,6 @@ Six workshops across three locations, including a **full** one (FIT-110, 5/5), a
 | View workshops, registrations & history  |   -   |   yes   |  yes  |
 
 Enforced in the API (401 when signed out, 403 for the wrong role); the UI merely hides what you can't use. Bonus: Admin and Manager can view the **Activity log** (audit trail).
-
-## Tests
-
-```bash
-npm test
-```
-
-Uses the `kenora_test` database (created by `docker compose`; migrations are applied automatically). It covers:
-
-- `tests/permissions.test.ts`: every endpoint x every role (and anonymous) against the matrix above, plus session revocation and the "last Admin" guard.
-- `tests/capacity.test.ts`: 50 simultaneous registrations for 5 seats (3 rounds) must yield exactly 5 successes; last-seat races; register/cancel races; history retention.
 
 ## Useful scripts
 
