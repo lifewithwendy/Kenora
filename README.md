@@ -31,7 +31,7 @@ Any PostgreSQL 14+ works. Skip `npm run db:up` and set the database up yourself:
 
    `CREATEDB` is only needed for `npm run db:migrate:dev` (it uses a temporary shadow database).
 
-2. Point `.env` at it. The format is `postgres://USER:PASSWORD@HOST:PORT/DBNAME`. The example file uses port **5433** (the Docker mapping); a normal local install listens on **5432**. URL-encode special characters in the password (`@` becomes `%40`), and add `?sslmode=require` if your host needs SSL.
+2. Copy `.env.example` to `.env` if you haven't, and point it at the database. `JWT_SECRET` (at least 32 characters) is also required; the example file has a dev-only value, and `openssl rand -base64 48` makes a proper one. The format is `postgres://USER:PASSWORD@HOST:PORT/DBNAME`. The example file uses port **5433** (the Docker mapping); a normal local install listens on **5432**. URL-encode special characters in the password (`@` becomes `%40`), and add `?sslmode=require` if your host needs SSL.
 
    ```
    DATABASE_URL=postgres://kenora:kenora@localhost:5432/kenora
@@ -90,7 +90,7 @@ Enforced in the API (401 when signed out, 403 for the wrong role); the UI merely
 
 | Method & path                                         | Who                | Notes |
 |-------------------------------------------------------|----------------------------------------------|----------------------|
-| `POST /api/auth/login`, `/logout`; `GET /api/auth/me` | any                                          | cookie session |
+| `POST /api/auth/login`, `/logout`; `GET /api/auth/me` | any                                          | JWT in an httpOnly cookie |
 | `GET/POST /api/users`, `PATCH /api/users/:id`         | admin                                        | roles, deactivate, reset password |
 | `GET /api/workshops`                                  | manager, staff                               | filters: `from`, `to`, `status`, `hasSeats=true\|false`, `q`, `page`, `pageSize` |
 | `POST /api/workshops`, `PATCH /api/workshops/:id`     | manager                                      | |

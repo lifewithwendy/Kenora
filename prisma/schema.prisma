@@ -42,27 +42,15 @@ model User {
   role         Role
   active       Boolean  @default(true)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// Login tokens issued before this moment are rejected (bumped on password reset).
+  authValidFrom DateTime @default(now()) @map("auth_valid_from") @db.Timestamptz(3)
 
-  sessions            Session[]
-  workshopsCreated    Workshop[]     @relation("WorkshopCreator")
+  workshopsCreated   Workshop[]     @relation("WorkshopCreator")
   registrationsMade   Registration[] @relation("RegisteredBy")
   registrationsCancel Registration[] @relation("CancelledBy")
   auditEntries        AuditLog[]
 
   @@map("users")
-}
-
-/// Server-side sessions. `id` is the SHA-256 of the cookie token, so a DB leak can't be replayed.
-model Session {
-  id        String   @id
-  userId    Int      @map("user_id")
-  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("sessions")
 }
 
 model Location {

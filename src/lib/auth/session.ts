@@ -1,38 +1,62 @@
-import { createHash, randomBytes } from "node:crypto";
+import { jwtVerify, SignJWT } from "jose";
 import { cookies } from "next/headers";
 import { prisma } from "@/db";
 import type { Role } from "@/generated/prisma/client";
 
 export const SESSION_COOKIE = "kenora_session";
-const SESSION_DAYS = 7;
+const SESSION_HOURS = 12;
 
 export type SessionUser = { id: number; name: string; email: string; role: Role };
 
-const hash = (token: string) => createHash("sha256").update(token).digest("hex");
+function secretKey() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.length < 32) {
+    throw new Error("JWT_SECRET must be set to at least 32 characters (see .env.example)");
+  }
+  return new TextEncoder().encode(secret);
+}
 
+/**
+ * The token only proves who the user is (`sub`). Role and active status are never read from it,
+ * they are looked up on every request, so deactivating someone or changing their role applies at once.
+ */
 export async function createSession(userId: number) {
-  const token = randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000);
-  await prisma.session.create({ data: { id: hash(token), userId, expiresAt } });
+  const expiresAt = new Date(Date.now() + SESSION_HOURS * 3_600_000);
+  const token = await new SignJWT({})
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(String(userId))
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
+    .sign(secretKey());
   return { token, expiresAt };
 }
 
-/** Resolves a raw cookie token to its user. Deactivated users never resolve. */
+/** Verifies the token, then loads the user fresh from the database. Inactive users never resolve. */
 export async function userFromToken(token: string | undefined): Promise<SessionUser | null> {
   if (!token) return null;
-  const session = await prisma.session.findFirst({
-    where: { id: hash(token), expiresAt: { gt: new Date() }, user: { active: true } },
-    select: { user: { select: { id: true, name: true, email: true, role: true } } },
+  const key = secretKey();
+
+  let sub: string | undefined;
+  let iat: number | undefined;
+  try {
+    const { payload } = await jwtVerify(token, key, { algorithms: ["HS256"] });
+    sub = payload.sub;
+    iat = payload.iat;
+  } catch {
+    return null; // bad signature, malformed or expired
+  }
+
+  const id = Number(sub);
+  if (!Number.isInteger(id) || iat === undefined) return null;
+
+  const user = await prisma.user.findFirst({
+    where: { id, active: true },
+    select: { id: true, name: true, email: true, role: true, authValidFrom: true },
   });
-  return session?.user ?? null;
-}
+  // Tokens issued before a password reset are rejected.
+  if (!user || iat < Math.floor(user.authValidFrom.getTime() / 1000)) return null;
 
-export async function destroySession(token: string | undefined) {
-  if (token) await prisma.session.deleteMany({ where: { id: hash(token) } });
-}
-
-export async function destroyUserSessions(userId: number) {
-  await prisma.session.deleteMany({ where: { userId } });
+  return { id: user.id, name: user.name, email: user.email, role: user.role };
 }
 
 export async function setSessionCookie(token: string, expiresAt: Date) {

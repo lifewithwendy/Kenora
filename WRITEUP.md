@@ -8,7 +8,7 @@ The whole brief hinges on one rule, that a workshop can never hold more people t
 
 Other choices, briefly:
 
-- **Login:** I wrote it myself (bcrypt, a random token in an httpOnly cookie, and the hashed token stored in a `sessions` table). There's no public signup and only three roles, so a full auth library felt like overkill. Keeping sessions in the database also means deactivating someone or changing their role takes effect straight away.
+- **Login:** I wrote it myself, since there's no public signup and only three roles, so a full auth library felt like overkill. Passwords are hashed with bcrypt, and a successful login sets a signed JWT (12 hours) in an httpOnly cookie. I didn't want a pure stateless JWT, because it would keep working after someone is deactivated or demoted. So the token only says who the user is, and on every request the server checks the signature and then reloads that user from the database to read their current role and active flag. Deactivating someone or changing their role takes effect on their very next request.
 - **Validation:** Zod on every request body and query string.
 - **UI:** React, TanStack Query and Tailwind. I kept it deliberately plain, with big buttons and plain-English error messages, since the team isn't technical.
 
@@ -28,7 +28,7 @@ Every API route has to declare who may call it, because the wrapper function won
 
 Hiding a button in the UI is only a convenience. The real checks are on the server, and anything not allowed gets a 401 (not signed in) or a 403 (wrong role). The `proxy.ts` file only redirects signed-out visitors to the login page; I don't treat it as security.
 
-A few extra safeguards: the last active Admin can't be demoted or deactivated, and changing someone's role, deactivating them or resetting their password signs them out everywhere.
+A few extra safeguards: the last active Admin can't be demoted or deactivated, and resetting someone's password invalidates every login token issued before the reset. Role changes and deactivation need no extra step, because the role and active flag are read from the database on every request.
 
 ## Registrations and history
 
@@ -54,6 +54,7 @@ Beyond the fields in their spreadsheet I added a location (they have three sites
 
 - Locking per workshop means bookings for one workshop go through one at a time. For a team of about 15 that's fine, and it keeps the code simple and easy to trust.
 - Login is basic: no password-reset emails, rate limiting or two-factor. An Admin resets passwords.
+- Signing out clears the cookie, but a copy of the token someone saved elsewhere stays valid until it expires (12 hours), unless the account is deactivated or its password is reset. The per-request database lookup costs one small query.
 - I used simple page-by-page pagination and kept the styling light rather than polished.
 - There's no support for recurring workshops.
 

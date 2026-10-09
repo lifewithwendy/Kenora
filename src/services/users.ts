@@ -1,7 +1,6 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "@/db";
 import type { Role } from "@/generated/prisma/client";
-import { destroyUserSessions } from "@/lib/auth/session";
 import { AppError, conflict, isUniqueViolation, notFound } from "@/lib/errors";
 import { writeAudit } from "./audit";
 
@@ -120,7 +119,8 @@ export async function updateUser(
         ...(patch.name !== undefined && { name: patch.name }),
         ...(patch.role !== undefined && { role: patch.role }),
         ...(patch.active !== undefined && { active: patch.active }),
-        ...(passwordHash && { passwordHash }),
+        // A new password invalidates every token issued before now.
+        ...(passwordHash && { passwordHash, authValidFrom: new Date() }),
       },
       select: publicSelect,
     });
@@ -136,14 +136,8 @@ export async function updateUser(
       before: { name: before.name, role: before.role, active: before.active },
       after: { name: after.name, role: after.role, active: after.active },
     });
-    return {
-      after,
-      revoke:
-        patch.active === false || patch.role !== undefined || !!passwordHash,
-    };
+    return after;
   });
 
-  // Role change, deactivation or password reset force a fresh sign-in.
-  if (result.revoke) await destroyUserSessions(id);
-  return result.after;
+  return result;
 }
