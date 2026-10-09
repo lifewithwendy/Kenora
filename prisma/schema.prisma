@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  admin
+  manager
+  staff
+
+  @@map("role")
+}
+
+enum WorkshopStatus {
+  draft
+  open
+  cancelled
+  completed
+
+  @@map("workshop_status")
+}
+
+enum RegistrationStatus {
+  active
+  waitlisted
+  cancelled
+
+  @@map("registration_status")
+}
+
+// Case-insensitive unique email: a unique index on lower(email) is added in the init migration
+// (Prisma can't express expression indexes).
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String
+  passwordHash String   @map("password_hash")
+  role         Role
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  sessions            Session[]
+  workshopsCreated    Workshop[]     @relation("WorkshopCreator")
+  registrationsMade   Registration[] @relation("RegisteredBy")
+  registrationsCancel Registration[] @relation("CancelledBy")
+  auditEntries        AuditLog[]
+
+  @@map("users")
+}
+
+/// Server-side sessions. `id` is the SHA-256 of the cookie token, so a DB leak can't be replayed.
+model Session {
+  id        String   @id
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Location {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  workshops Workshop[]
+
+  @@map("locations")
+}
+
+// A CHECK (capacity > 0) constraint is added in the init migration.
+model Workshop {
+  id          Int            @id @default(autoincrement())
+  code        String         @unique
+  title       String
+  instructor  String
+  description String         @default("")
+  locationId  Int?           @map("location_id")
+  startsAt    DateTime       @map("starts_at") @db.Timestamptz(3)
+  endsAt      DateTime?      @map("ends_at") @db.Timestamptz(3)
+  capacity    Int
+  status      WorkshopStatus @default(open)
+  createdBy   Int?           @map("created_by")
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  location      Location?      @relation(fields: [locationId], references: [id])
+  creator       User?          @relation("WorkshopCreator", fields: [createdBy], references: [id])
+  registrations Registration[]
+
+  @@index([startsAt])
+  @@index([status])
+  @@map("workshops")
+}
+
+/// Registrations are never deleted: cancelling flips `status` and records who/when,
+/// so the full history stays available.
+/// A partial unique index (one live booking per attendee email per workshop) is added in the init migration.
+model Registration {
+  id            Int                @id @default(autoincrement())
+  workshopId    Int                @map("workshop_id")
+  attendeeName  String             @map("attendee_name")
+  attendeeEmail String             @map("attendee_email")
+  status        RegistrationStatus @default(active)
+  registeredBy  Int                @map("registered_by")
+  registeredAt  DateTime           @default(now()) @map("registered_at") @db.Timestamptz(3)
+  cancelledBy   Int?               @map("cancelled_by")
+  cancelledAt   DateTime?          @map("cancelled_at") @db.Timestamptz(3)
+  cancelReason  String?            @map("cancel_reason")
+
+  workshop  Workshop @relation(fields: [workshopId], references: [id])
+  registrar User     @relation("RegisteredBy", fields: [registeredBy], references: [id])
+  canceller User?    @relation("CancelledBy", fields: [cancelledBy], references: [id])
+
+  @@index([workshopId, status])
+  @@map("registrations")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  actorId    Int?     @map("actor_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   Int?     @map("entity_id")
+  before     Json?
+  after      Json?
+  at         DateTime @default(now()) @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([at])
+  @@map("audit_log")
+}
