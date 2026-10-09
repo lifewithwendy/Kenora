@@ -1,43 +1,65 @@
 # Workshop Registration Service: write-up
 
-## Stack and why
-- **Next.js (App Router) + TypeScript**: one repo and one deployable for UI and API; shared types and validation. All mutations go through explicit REST route handlers (not Server Actions) so access control and concurrency are enforced and checked at the HTTP boundary.
-- **PostgreSQL + Prisma ORM**: the headline rule is a concurrency rule, and Postgres row locks make it provable. Prisma gives a typed client and migrations; the few things it can't express are written as raw SQL on purpose: the `SELECT ... FOR UPDATE` row lock, the derived seat counts in the workshop search, and three constraints appended to the init migration (case-insensitive unique email, the partial unique index on live bookings, and `capacity > 0`).
-- **Own session auth** (bcrypt, random token in an httpOnly cookie, hashed token stored in a `sessions` table). With no public signup and three roles, a library adds little; DB sessions mean deactivating a user or changing their role takes effect immediately.
-- **Zod** validates every request body/query; **React + TanStack Query + Tailwind** for the UI, kept deliberately plain (large targets, plain-language errors) for a non-technical team.
+## What I built and why I chose this stack
 
-## How over-registration is prevented
-`registerAttendee` runs in one transaction: it locks the workshop row (`SELECT ... FOR UPDATE`), counts *active* registrations, and inserts only if `count < capacity`. Concurrent requests for the same workshop queue behind the lock, so each counts seats after the previous one committed; the loser gets `409 WORKSHOP_FULL`. Different workshops don't block each other. Cancel and capacity edits take the same lock, in the same order (workshop first), so they can't race with bookings or deadlock.
-Seat counts are always derived (`count` of active rows), never a stored counter that can drift. A partial unique index also stops the same email holding two live bookings for one workshop.
-Checked by firing 30 parallel HTTP requests at the last seat of a running server (1x `201`, 29x `409`).
+It's a single Next.js app (App Router, TypeScript) that serves both the UI and a REST API, backed by PostgreSQL through Prisma. I wanted one repo and one thing to deploy, and it let me share types and validation between the frontend and the backend.
+
+The whole brief hinges on one rule, that a workshop can never hold more people than it has seats, and that's a concurrency problem. Postgres gives me row locks, so I let the database enforce it instead of trying to be clever in application code. I put every change behind plain API routes rather than Server Actions, so the permission checks sit in one obvious place and I could poke at them over HTTP.
+
+Other choices, briefly:
+
+- **Login:** I wrote it myself (bcrypt, a random token in an httpOnly cookie, and the hashed token stored in a `sessions` table). There's no public signup and only three roles, so a full auth library felt like overkill. Keeping sessions in the database also means deactivating someone or changing their role takes effect straight away.
+- **Validation:** Zod on every request body and query string.
+- **UI:** React, TanStack Query and Tailwind. I kept it deliberately plain, with big buttons and plain-English error messages, since the team isn't technical.
+
+## How I stop over-registration
+
+When someone registers an attendee, the server opens a transaction and locks that workshop's row (`SELECT … FOR UPDATE`). It then counts the active registrations and only inserts if there's still room. If two people go for the last seat at the same moment, one waits for the other to finish, sees the seat is gone, and gets a clear "workshop is full" error (HTTP 409). Different workshops don't block each other.
+
+Cancelling and editing a workshop's capacity take the same lock, always in the same order, so they can't sneak past a booking or deadlock with one.
+
+I never store a "seats left" number, because it could drift out of sync. It's always counted from the registrations. A unique index also stops the same email address holding two live bookings for one workshop.
+
+To check it for real, I started the built app and fired 30 requests at the last seat of a workshop at the same time. Exactly one got through and the other 29 were refused.
 
 ## Access control
-Every route is wrapped by `route({ access, ... })`; `access` is a required argument, so a handler cannot be written without declaring who may call it. A single permission map (`PERMISSIONS`) mirrors the client's matrix. Auth runs before the body is parsed. The proxy (`proxy.ts`) is only an optimistic redirect for signed-out page visits, never a security boundary; server layouts and API guards do the real checks. Extras: last active Admin can't be demoted/deactivated; role changes, deactivation and password resets revoke that user's sessions.
+
+Every API route has to declare who may call it, because the wrapper function won't accept a handler without that. All the role rules live in one small map that mirrors the table in the brief. Authentication runs before anything else, including reading the request body.
+
+Hiding a button in the UI is only a convenience. The real checks are on the server, and anything not allowed gets a 401 (not signed in) or a 403 (wrong role). The `proxy.ts` file only redirects signed-out visitors to the login page; I don't treat it as security.
+
+A few extra safeguards: the last active Admin can't be demoted or deactivated, and changing someone's role, deactivating them or resetting their password signs them out everywhere.
 
 ## Registrations and history
-Cancelling sets `status='cancelled'` plus `cancelled_by/at/reason`; rows are never deleted. Every registration records who registered it and when. `GET .../registrations?includeCancelled=true` returns the full history, shown in the UI via "Show cancelled & history".
+
+Cancelling never deletes anything. The registration is marked cancelled, along with who did it, when, and an optional reason. Each registration also records who created it and when. The workshop page has a "Show cancelled & history" switch that lists everything, so nobody has to wonder who dropped a seat.
 
 ## Finding workshops
-`GET /api/workshops` filters by date range, status, and seats (`hasSeats=true|false`), plus text search over title/code/instructor, with pagination. The UI keeps filters in the URL (shareable, survives refresh) and has a one-click "open with seats in the next 7 days".
 
-## Additions beyond the spreadsheet fields
-Location (they have three sites), description, end time, `draft` status, and a cancellation reason. **Audit trail (bonus)** is implemented for account/role changes, workshop edits and registration create/cancel (who, what, before/after, when), written in the same transaction as the change; Admin and Manager can read it.
+Staff can filter by date range, status, and whether seats are still available, and search by title, code or instructor. The filters live in the URL, so a filtered view can be bookmarked or shared. There's also a one-click button for "open workshops with seats in the next 7 days", which is the exact question the front desk asked.
+
+## Things I added
+
+Beyond the fields in their spreadsheet I added a location (they have three sites), a description, an end time, a draft status and a cancellation reason. I also built the audit trail from the bonus list. Account and role changes, workshop edits and registrations or cancellations are logged with who, what, before and after, and when, in the same transaction as the change itself. Admins and Managers can read the log.
 
 ## Assumptions
-- Admin manages accounts only and cannot register attendees or view workshops, exactly as the matrix states.
-- Only `open` workshops accept registrations; "full" is derived, not a status.
-- An attendee (matched by email, case-insensitive) can hold one live booking per workshop.
-- Times are stored in UTC and shown in the browser's timezone.
-- Capacity can't be edited below the number of active registrations.
+
+- Admins only manage accounts. As in the brief's table, they can't register attendees or view workshops.
+- Only workshops marked "open" accept registrations. "Full" isn't a status, it's worked out from the numbers.
+- One live booking per person per workshop, matched on email regardless of capitalisation.
+- Times are stored in UTC and shown in the browser's time zone.
+- A workshop's capacity can't be lowered below the number of people already registered.
 
 ## Trade-offs
-- Per-workshop locking serializes bookings for *one* workshop. For a centre with ~15 staff this is a non-issue and buys simple, obviously-correct code.
-- Simple bcrypt-password login: no email reset, rate limiting or MFA (Admin resets passwords).
-- Offset pagination and a lightly styled UI over polish.
-- Workshop dates are compared as instants; no recurring-workshop support.
 
-## Skipped
-- **Waitlist (bonus)**: not built. The schema reserves a `waitlisted` status, but nothing uses it yet; promotion would slot into the existing locked cancel transaction.
-- Login rate limiting / lockout, password change by the user themselves, and CSRF tokens (mitigated by `SameSite=Lax` and JSON-only bodies).
+- Locking per workshop means bookings for one workshop go through one at a time. For a team of about 15 that's fine, and it keeps the code simple and easy to trust.
+- Login is basic: no password-reset emails, rate limiting or two-factor. An Admin resets passwords.
+- I used simple page-by-page pagination and kept the styling light rather than polished.
+- There's no support for recurring workshops.
+
+## What I skipped
+
+- The waitlist bonus. The database has a "waitlisted" status set aside for it, but nothing uses it yet. Promoting the next person would fit naturally into the existing cancel transaction.
+- Login rate limiting or lockout, letting people change their own password, and CSRF tokens. The cookie is `SameSite=Lax` and the API only accepts JSON, which covers most of the risk.
 - Automated tests.
-- Live deployment.
+- A live deployment.
